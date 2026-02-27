@@ -115,8 +115,8 @@ print(json.loads(response["body"].read())["generation"])
 import boto3, json
 
 def zapytaj_bielika(pytanie: str, max_tokenow: int = 512) -> str:
-    bedrock = boto3.client("bedrock",         region_name="us-east-1")
-    runtime = boto3.client("bedrock-runtime", region_name="us-east-1")
+    bedrock = boto3.client("bedrock",         region_name="eu-central-1")
+    runtime = boto3.client("bedrock-runtime", region_name="eu-central-1")
 
     models    = bedrock.list_imported_models()
     model_arn = next(
