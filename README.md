@@ -83,37 +83,30 @@ aws bedrock list-imported-models \
 ```python
 import boto3, json
 
-bedrock   = boto3.client("bedrock",         region_name="us-east-1")
-runtime   = boto3.client("bedrock-runtime", region_name="us-east-1")
+bedrock = boto3.client("bedrock",         region_name="eu-central-1")
+runtime = boto3.client("bedrock-runtime", region_name="eu-central-1")
 
-# Pobierz ARN zaimportowanego modelu
 models    = bedrock.list_imported_models()
 model_arn = next(
     m["modelArn"] for m in models["modelSummaries"]
     if "Bielik" in m["modelName"]
 )
-print("Model ARN:", model_arn)
 
-# Format promptu Llama 3 Instruct
-prompt = """<|begin_of_text|><|start_header_id|>user<|end_header_id|>
-Wyjaśnij mi w 3 zdaniach, czym jest Amazon Bedrock.<|eot_id|>
-<|start_header_id|>assistant<|end_header_id|>
-"""
+prompt = (
+    "<|begin_of_text|>"
+    "<|start_header_id|>user<|end_header_id|>\n"
+    "Podaj dotychczasowe miasta, będące stolicą Polski.<|eot_id|>\n"
+    "<|start_header_id|>assistant<|end_header_id|>\n"
+)
 
 response = runtime.invoke_model(
     modelId=model_arn,
     contentType="application/json",
     accept="application/json",
-    body=json.dumps({
-        "prompt": prompt,
-        "max_gen_len": 512,
-        "temperature": 0.7,
-        "top_p": 0.9,
-    })
+    body=json.dumps({"prompt": prompt, "max_gen_len": 512, "temperature": 0.7})
 )
 
-result = json.loads(response["body"].read())
-print(result["generation"])
+print(json.loads(response["body"].read())["generation"])
 ```
 
 **Funkcja pomocnicza do wielokrotnego użycia:**
