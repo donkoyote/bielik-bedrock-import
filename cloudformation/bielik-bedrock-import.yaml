@@ -1,0 +1,267 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  LIAC — Bielik 11B na Amazon Bedrock
+  Jedno polecenie w CloudShell tworzy całą infrastrukturę i uruchamia import.
+  Repozytorium: https://github.com/donkoyote/bielik-bedrock-import
+
+Parameters:
+  HuggingFaceToken:
+    Type: String
+    NoEcho: true
+    Description: >
+      Token API z HuggingFace (Settings → Access Tokens → New token → read).
+      Model wymaga akceptacji warunków: https://huggingface.co/speakleash/Bielik-11B-v3.0-Instruct
+
+  ModelId:
+    Type: String
+    Default: speakleash/Bielik-11B-v3.0-Instruct
+    Description: ID modelu na HuggingFace
+
+  BedrockModelName:
+    Type: String
+    Default: Bielik-11B-v3-Instruct
+    Description: Nazwa modelu w Amazon Bedrock po imporcie
+
+  S3Prefix:
+    Type: String
+    Default: bielik-11b-v3
+    Description: Prefix (folder) w S3 z plikami modelu
+
+Resources:
+
+  # ── S3 ─────────────────────────────────────────────────────────────────────
+  ModelBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "donkoyote-bielik-${AWS::AccountId}-${AWS::Region}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: LIAC-Bielik
+
+  # ── SSM — HuggingFace token ────────────────────────────────────────────────
+  HuggingFaceTokenParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /bielik-bedrock/hf-token
+      Type: String
+      Value: !Ref HuggingFaceToken
+      Description: HuggingFace API token dla importu Bielik 11B
+
+  # ── IAM — CodeBuild ────────────────────────────────────────────────────────
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "LIAC-Bielik-CodeBuild-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:ListBucket, s3:DeleteObject]
+                Resource:
+                  - !GetAtt ModelBucket.Arn
+                  - !Sub "${ModelBucket.Arn}/*"
+        - PolicyName: BedrockImport
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:CreateModelImportJob
+                  - bedrock:GetModelImportJob
+                  - bedrock:ListModelImportJobs
+                  - bedrock:GetImportedModel
+                Resource: "*"
+        - PolicyName: SSMRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/bielik-bedrock/*"
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*"
+        - PolicyName: PassRoleToBedrock
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt BedrockImportRole.Arn
+
+  # ── IAM — Bedrock (czyta S3 podczas importu) ──────────────────────────────
+  BedrockImportRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "LIAC-Bielik-Bedrock-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3ReadForImport
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject, s3:ListBucket]
+                Resource:
+                  - !GetAtt ModelBucket.Arn
+                  - !Sub "${ModelBucket.Arn}/*"
+
+  # ── CodeBuild Project ──────────────────────────────────────────────────────
+  BielikImportProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: LIAC-Bielik-Import
+      Description: >
+        Pobiera Bielik 11B z HuggingFace → S3 → importuje do Amazon Bedrock.
+        Uruchom ręcznie: aws codebuild start-build --project-name LIAC-Bielik-Import
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      TimeoutInMinutes: 480
+      QueuedTimeoutInMinutes: 60
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: BUCKET_NAME
+            Value: !Ref ModelBucket
+          - Name: MODEL_ID
+            Value: !Ref ModelId
+          - Name: BEDROCK_MODEL_NAME
+            Value: !Ref BedrockModelName
+          - Name: S3_PREFIX
+            Value: !Ref S3Prefix
+          - Name: BEDROCK_IMPORT_ROLE_ARN
+            Value: !GetAtt BedrockImportRole.Arn
+          - Name: HF_TOKEN_SSM_PATH
+            Value: !Ref HuggingFaceTokenParam
+          - Name: AWS_REGION_NAME
+            Value: !Ref AWS::Region
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                python: 3.11
+              commands:
+                - pip install huggingface_hub --quiet
+                - |
+                  cat > /tmp/download_model.py << 'ENDOFSCRIPT'
+                  import os, sys
+                  from huggingface_hub import snapshot_download
+                  print("Pobieranie modelu:", os.environ["MODEL_ID"])
+                  snapshot_download(
+                      repo_id=os.environ["MODEL_ID"],
+                      local_dir="/tmp/model",
+                      token=os.environ["HF_TOKEN"],
+                      ignore_patterns=["*.md", ".gitattributes", "*.txt"],
+                  )
+                  print("Download OK")
+                  ENDOFSCRIPT
+                - |
+                  cat > /tmp/bedrock_import.py << 'ENDOFSCRIPT'
+                  import boto3, os, time, sys
+                  bedrock = boto3.client("bedrock", region_name=os.environ["AWS_REGION_NAME"])
+                  job = bedrock.create_model_import_job(
+                      jobName="bielik-" + str(int(time.time())),
+                      importedModelName=os.environ["BEDROCK_MODEL_NAME"],
+                      roleArn=os.environ["BEDROCK_IMPORT_ROLE_ARN"],
+                      modelDataSource={
+                          "s3DataSource": {
+                              "s3Uri": "s3://" + os.environ["BUCKET_NAME"] + "/" + os.environ["S3_PREFIX"] + "/"
+                          }
+                      }
+                  )
+                  job_arn = job["jobArn"]
+                  print("Job ARN: " + job_arn)
+                  for i in range(60):
+                      time.sleep(60)
+                      resp = bedrock.get_model_import_job(jobIdentifier=job_arn)
+                      state = resp["status"]
+                      print("[" + str(i+1) + "/60] " + state)
+                      if state == "Complete":
+                          print("Model gotowy!")
+                          print("ARN: " + resp.get("importedModelArn", ""))
+                          sys.exit(0)
+                      elif state in ("Failed", "Cancelled"):
+                          print("BLAD: " + resp.get("failureMessage", "Nieznany blad"))
+                          sys.exit(1)
+                  print("Polling timeout - sprawdz Bedrock console")
+                  sys.exit(1)
+                  ENDOFSCRIPT
+            pre_build:
+              commands:
+                - echo "Pobieranie tokenu z SSM"
+                - export HF_TOKEN=$(aws ssm get-parameter --name "$HF_TOKEN_SSM_PATH" --query Parameter.Value --output text)
+                - echo "Token OK | Model $MODEL_ID | Bucket $BUCKET_NAME/$S3_PREFIX"
+                - df -h /
+            build:
+              commands:
+                - echo "Download modelu z HuggingFace"
+                - python3 /tmp/download_model.py
+                - echo "Sync do S3"
+                - aws s3 sync /tmp/model s3://$BUCKET_NAME/$S3_PREFIX/ --no-progress
+                - echo "S3 sync OK"
+                - aws s3 ls s3://$BUCKET_NAME/$S3_PREFIX/ --recursive --human-readable | tail -10
+            post_build:
+              commands:
+                - echo "Import do Amazon Bedrock"
+                - python3 /tmp/bedrock_import.py
+      Artifacts:
+        Type: NO_ARTIFACTS
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: /aws/codebuild/LIAC-Bielik-Import
+
+      Tags:
+        - Key: Project
+          Value: LIAC-Bielik
+
+# ── Outputs ────────────────────────────────────────────────────────────────
+Outputs:
+  StartBuildCommand:
+    Description: "Skopiuj i wklej — uruchamia import modelu"
+    Value: !Sub "aws codebuild start-build --project-name ${BielikImportProject} --region ${AWS::Region} --query 'build.id' --output text"
+
+  WatchLogsCommand:
+    Description: "Obserwuj logi na żywo w CloudShell"
+    Value: !Sub "aws logs tail /aws/codebuild/LIAC-Bielik-Import --follow --region ${AWS::Region}"
+
+  ModelBucketName:
+    Description: "Bucket S3 z plikami modelu"
+    Value: !Ref ModelBucket
+
+  CheckBedrockModels:
+    Description: "Sprawdź zaimportowane modele w Bedrock"
+    Value: !Sub "aws bedrock list-imported-models --region ${AWS::Region} --query 'modelSummaries[*].{Name:modelName,Status:modelStatus,ARN:modelArn}' --output table"
