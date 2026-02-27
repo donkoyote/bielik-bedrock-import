@@ -327,8 +327,8 @@ Resources:
                 - echo "Sprawdzanie wymaganych plikow..."
                 - aws s3 ls s3://$BUCKET_NAME/$S3_PREFIX/config.json || (echo "BLAD: brak config.json" && exit 1)
                 - SHARD_COUNT=$(aws s3 ls s3://$BUCKET_NAME/$S3_PREFIX/ --recursive | grep "safetensors$" | wc -l)
-                - echo "Znaleziono shardow: $SHARD_COUNT"
-                - "[ \"\$SHARD_COUNT\" -ge 1 ] || (echo \"BLAD: brak plikow safetensors - model niepelny\" && exit 1)"
+                - echo "Znaleziono shardow safetensors $SHARD_COUNT"
+                - test $SHARD_COUNT -ge 1 || (echo "BLAD brak plikow safetensors model niepelny" && exit 1)
                 - echo "Weryfikacja OK - $SHARD_COUNT shardow gotowych do importu"
             post_build:
               commands:
