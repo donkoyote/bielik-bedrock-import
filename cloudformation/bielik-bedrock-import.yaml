@@ -232,7 +232,13 @@ Resources:
                 - echo "Sync do S3"
                 - aws s3 sync /tmp/model s3://$BUCKET_NAME/$S3_PREFIX/ --no-progress
                 - echo "S3 sync OK"
-                - aws s3 ls s3://$BUCKET_NAME/$S3_PREFIX/ --recursive --human-readable | tail -10
+                - aws s3 ls s3://$BUCKET_NAME/$S3_PREFIX/ --recursive --human-readable
+                - echo "Sprawdzanie wymaganych plikow..."
+                - aws s3 ls s3://$BUCKET_NAME/$S3_PREFIX/config.json || (echo "BLAD brak config.json" && exit 1)
+                - SHARD_COUNT=$(aws s3 ls s3://$BUCKET_NAME/$S3_PREFIX/ --recursive | grep "safetensors$" | wc -l)
+                - echo "Znaleziono shardow safetensors $SHARD_COUNT"
+                - test $SHARD_COUNT -ge 1 || (echo "BLAD brak plikow safetensors model niepelny" && exit 1)
+                - echo "Weryfikacja OK - $SHARD_COUNT shardow gotowych do importu"
             post_build:
               commands:
                 - echo "Import do Amazon Bedrock"
